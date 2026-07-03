@@ -68,5 +68,15 @@ class ToolRegistry:
     #
     def execute(self, tool_name: str, arguments: dict) -> dict:
         """执行指定工具，返回结果字典"""
-        # TODO: 在这里实现你的代码
-        pass  # ← 删掉这行，写你的实现
+        if tool_name not in self._tools:
+            return {"error": f"Tool '{tool_name}' not found"}
+            
+        func = self._tools[tool_name]["func"]
+        try:
+            result = func(**arguments)
+        except Exception as e:
+            return {"error": str(e)}
+            
+        if isinstance(result, dict):
+            return result
+        return {"result": result}
