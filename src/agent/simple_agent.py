@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src.agent.llm_client import LLMClient
 from src.agent.logger import AgentLogger
+from src.eval.trace_recorder import TraceRecorder
 from src.tools.setup import create_test_tool_registry
 
 
@@ -92,9 +93,59 @@ class SimpleAgent:
         
         返回：(assistant_msg, finish_reason)
         """
-        # TODO: 在这里实现你的代码
-        pass  # ← 删掉这行，写你的实现
+        # # 1. 动态估算 max_tokens：根据对话历史总字符数，防止工具参数被截断    
+        input_chars = sum(len(str(m.get("content", ""))) for m in self.messages)
+        max_tokens = max(8092, int(input_chars * 2) + 4096)
 
+        # # 2. 调用 LLM
+        # print(f"[DEBUG] 当前 messages 条数: {len(self.messages)}")
+        # print(f"[DEBUG] 对话历史总字符数: {input_chars}, 估算 max_tokens: {max_tokens}")
+        # print(f"[DEBUG] 正在调用 LLM...")
+        response = self.llm.client.chat.completions.create(
+            model=self.llm.model,
+            messages=self.messages,
+            tools=self.registry.get_schemas(),
+            tool_choice="auto",
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+        assistant_msg = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
+        usage = response.usage
+
+        # # 4. 日志记录
+        # print(f"[DEBUG] finish_reason: {finish_reason}")
+        # print(f"[DEBUG] token 用量: prompt={usage.prompt_tokens}, completion={usage.completion_tokens}, total={usage.total_tokens}")
+        # print(f"[DEBUG] assistant_msg.content (全文):")
+        # print(assistant_msg.content or '(空)')
+        # print(f"[DEBUG] tool_calls 数量: {len(assistant_msg.tool_calls) if assistant_msg.tool_calls else 0}")
+        # if assistant_msg.tool_calls:
+        #     for i, tc in enumerate(assistant_msg.tool_calls):
+        #         print(f"[DEBUG]   tool_call[{i}]: id={tc.id}, name={tc.function.name}")
+        #         print(f"[DEBUG]   tool_call[{i}].arguments (全文): {tc.function.arguments}")
+
+        # # 5. 截断自动重试：finish_reason=="length" 说明输出被 max_tokens 截断
+        if finish_reason == "length":
+            max_tokens *= 2
+            response = self.llm.client.chat.completions.create(
+                model=self.llm.model,
+                messages=self.messages,
+                tools=self.registry.get_schemas(),
+                tool_choice="auto",
+                temperature=0.3,
+                max_tokens=max_tokens,
+            )
+        assistant_msg = response.choices[0].message
+        finish_reason = response.choices[0].finish_reason
+        usage = response.usage  # 重试后更新 usage，确保 logger 记录的是最终结果的 token 用量
+        print(f"[DEBUG] 重试后 finish_reason: {finish_reason}")
+
+        # 6. 用 logger 记录
+        tool_calls_list = assistant_msg.tool_calls
+        usage_dict = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens}
+        self.logger.log_think(round_num, finish_reason, tool_calls_list, usage_dict)
+
+        return assistant_msg, finish_reason, usage_dict
     # ================================================================
     # TODO 6.2: 实现 act() — Acting
     # ================================================================
@@ -118,10 +169,92 @@ class SimpleAgent:
         """
         Acting 阶段：执行工具调用
         
+        职责：
+        1. 把 assistant_msg 序列化后存入 messages（OpenAI 协议要求）
+        2. 执行每个 tool_call 对应的工具函数
+        3. 返回结果列表供 observe() 使用
+        
         返回：[(tool_call_id, result_dict), ...]
         """
-        # TODO: 在这里实现你的代码
-        pass  # ← 删掉这行，写你的实现
+        # ── 步骤 1：把 assistant 消息存入 messages 历史 ──
+        # 为什么必须存？
+        #   OpenAI API 协议要求：assistant 的 tool_calls 和后续的 tool 结果必须配对出现。
+        #   如果不存，下一轮 API 调用时模型不知道为什么要调用这些工具。
+        #
+        # model_dump() 把 Pydantic 对象转成 dict：
+        #   {
+        #     "role": "assistant",
+        #     "content": "...",
+        #     "tool_calls": [{"id": "call_xxx", "type": "function", "function": {"name": "...", "arguments": "..."}}]
+        #   }
+        assistant_msg = assistant_msg.model_dump()
+
+        # ── 防御性校验：检查 tool_calls 中的 arguments 是否是合法 JSON ──
+        # 为什么必须校验？
+        #   LLM 输出可能被截断（达到 max_tokens 上限），导致 arguments 是不完整的 JSON。
+        #   如果不合法直接存入 messages，下一轮 API 调用会报 400 错误：
+        #   "The 'function.arguments' parameter must be in JSON format"
+        #   而且这个错误无法恢复，整个对话就废了。
+
+        for tc in assistant_msg.get("tool_calls", []):
+            args_str = tc.get("function", {}).get("arguments")
+            try:
+                json.loads(args_str)
+            except json.JSONDecodeError:
+                print(f"[WARN] tool_call {tc['id']} 的 arguments 不是合法 JSON，已清空为 '{{}}'")
+                tc["function"]["arguments"] = "{}"
+
+        self.messages.append(assistant_msg)
+
+        # # ── 步骤 2：遍历 tool_calls，逐个执行工具 ──
+        result = []
+        for tc in assistant_msg.get("tool_calls", []):
+            tool_name = tc.get("function", {}).get("name")
+            tool_id = tc.get("id")
+            args_str = json.loads(tc.get("function", {}).get("arguments"))
+            tool_result = self.registry.execute(tool_name, args_str)
+            # 记录工具执行日志
+            self.logger.log_act(
+                round_num=0,
+                tool_name=tool_name,
+                tool_args=args_str,
+                result=tool_result,
+            )
+            result.append((tool_id, tool_result))
+        return result
+
+        # results = []
+        # for tool_call in assistant_msg.tool_calls:
+        #     tool_name = tool_call.function.name
+        #     tool_call_id = tool_call.id
+
+        #     # 2a. 解析参数
+        #     try:
+        #         tool_args = json.loads(tool_call.function.arguments)
+        #     except json.JSONDecodeError as e:
+        #         # 参数解析失败（上面已经修复了 messages 中的值，这里再尝试一次）
+        #         print(f"[ERROR] {tool_name} 参数 JSON 解析失败: {e}")
+        #         # 把错误信息作为工具结果返回给 LLM，让它自行修正
+        #         results.append((tool_call_id, {"error": f"参数 JSON 解析失败: {e}"}))
+        #         continue
+
+        #     # 2b. 执行工具
+        #     print(f"  [调用] {tool_name}({tool_args})")
+        #     result = self.registry.execute(tool_name, tool_args)
+        #     print(f"  [结果] {str(result)[:200]}...")
+
+        #     # 2c. 记录日志
+        #     self.logger.log_act(
+        #         round_num=0,  # act() 不知道当前轮次，传 0 由 observe 补充
+        #         tool_name=tool_name,
+        #         tool_args=tool_args,
+        #         result=result,
+        #     )
+
+        #     # 2d. 收集结果
+        #     results.append((tool_call_id, result))
+
+        # return results
 
     # ================================================================
     # TODO 6.3: 实现 observe() — Observe
@@ -145,11 +278,41 @@ class SimpleAgent:
         """
         Observe 阶段：把工具结果写回消息历史
         
+        职责：
+        1. 把每个工具结果格式化为 OpenAI 要求的 tool role 消息
+        2. 追加到 self.messages，供下一轮 LLM 调用使用
+        3. 记录日志
+        
         参数：
         - results: act() 返回的 [(tool_call_id, result_dict), ...]
+        
+        为什么单独拆出来？
+          因为未来你可能想在这里加：
+          - 上下文压缩（工具结果太大时截断，防止 context window 溢出）
+          - 轨迹记录（完整保存每轮执行路径）
+          - 记忆提取（从结果中提取关键信息存入长期记忆）
         """
-        # TODO: 在这里实现你的代码
-        pass  # ← 删掉这行，写你的实现
+        for tool_call_id, result_dict in results:
+            # ── 把工具结果格式化为 OpenAI 协议要求的格式 ──
+            # OpenAI 要求 tool 消息必须包含：
+            #   - role: "tool"       （固定值，告诉 API 这是工具返回的结果）
+            #   - tool_call_id: xxx  （对应 assistant_msg 中 tool_call 的 id）
+            #                        API 靠这个 id 把结果和请求配对
+            #   - content: JSON 字符串（工具返回的内容，必须是字符串）
+            #
+            # 为什么 content 是 JSON 字符串而不是 dict？
+            #   因为 OpenAI API 规定 tool 消息的 content 字段类型是 string。
+            #   模型会解析这个 JSON 字符串来理解工具返回了什么。
+            content_str = json.dumps(result_dict, ensure_ascii=False)
+
+            tool_message = {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": content_str,
+            }
+            self.messages.append(tool_message)
+
+        print(f"[DEBUG] observe: 写入了 {len(results)} 条工具结果，当前 messages 共 {len(self.messages)} 条")
 
     # ================================================================
     # run() — 主循环（框架已实现，你不需要改这个方法）
@@ -178,24 +341,58 @@ class SimpleAgent:
             {"role": "user", "content": user_input},
         ]
 
+        # 初始化 TraceRecorder（评测用轨迹记录）
+        self.trace = TraceRecorder(input_text=user_input[:500])
+
         for round_num in range(1, max_rounds + 1):
             print(f"\n{'='*50}")
             print(f"--- 第 {round_num} 轮 ---")
 
+            # 开始新一轮 trace
+            self.trace.start_round()
+
             # ── ① Reasoning：调用 LLM 思考 ──
-            assistant_msg, finish_reason = self.think(round_num)
+            assistant_msg, finish_reason, usage_dict = self.think(round_num)
+
+            # 记录 think 到 trace（usage_dict 直接从 think() 获取）
+            self.trace.record_think(
+                content=assistant_msg.content or "",
+                finish_reason=finish_reason,
+                tool_call_count=len(assistant_msg.tool_calls) if assistant_msg.tool_calls else 0,
+                usage=usage_dict,
+            )
 
             # ── ② 判断是否完成 ──
-            # finish_reason == "stop" → 模型认为任务完成
-            # 没有 tool_calls → 模型只想回复文本，不想调用工具
             if finish_reason == "stop" or not assistant_msg.tool_calls:
                 print(f"[DEBUG] 任务完成（finish_reason={finish_reason}）")
                 print(assistant_msg.content)
                 self.logger.log_completion(round_num, assistant_msg.content)
+                self.trace.finish(output=assistant_msg.content)
+                self.trace.save(f"data/eval/traces/{self.trace.trace_id}.json")
                 return assistant_msg.content
 
             # ── ③ Acting：执行工具调用 ──
             tool_results = self.act(assistant_msg)
+
+            # 记录工具调用到 trace
+            for tc in assistant_msg.tool_calls or []:
+                tool_name = tc.function.name
+                try:
+                    tool_args = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    tool_args = {}
+                # 找到对应的结果
+                tool_result = None
+                for tid, tr in tool_results:
+                    if tid == tc.id:
+                        tool_result = tr
+                        break
+                if tool_result is not None:
+                    self.trace.record_tool_call(
+                        tool_name=tool_name,
+                        arguments=tool_args,
+                        result=tool_result,
+                    )
 
             # ── ④ Observe：把结果写回记忆 ──
             self.observe(tool_results)
@@ -204,4 +401,6 @@ class SimpleAgent:
 
         print("[WARN] 达到最大轮次限制")
         self.logger.log_timeout(max_rounds)
+        self.trace.finish(output=None)
+        self.trace.save(f"data/eval/traces/{self.trace.trace_id}.json")
         return None
