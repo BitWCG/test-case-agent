@@ -1,0 +1,59 @@
+{
+  "trace_id": "trace_20260713_184631_3b7c0377",
+  "started_at": "2026-07-13T18:46:31.539076",
+  "finished_at": "2026-07-13T18:46:34.690970",
+  "input": "请分析以下需求文档并生成测试用例。\n文件路径: /nonexistent/fake_requirement.md\n(提示: 调用 extract_features 时传 file_path=\"/nonexistent/fake_requirement.md\")",
+  "output": "文件路径 `/nonexistent/fake_requirement.md` 不存在，无法读取需求文档。\n\n请提供一个**真实存在的、有效的 Markdown 格式需求文档路径**，或直接将需求文档的文本内容粘贴给我，我将立即为您解析并生成完整的测试用例。\n\n如果您有示例需求内容（哪怕是一小段），也可以直接提供，我可基于该内容开展分析。",
+  "steps": [
+    {
+      "round": 1,
+      "type": "think",
+      "content": "",
+      "finish_reason": "tool_calls",
+      "tool_call_count": 1,
+      "usage": {
+        "prompt_tokens": 1087,
+        "completion_tokens": 27,
+        "total_tokens": 1114
+      },
+      "timestamp": "2026-07-13T18:46:32.747985"
+    },
+    {
+      "round": 1,
+      "type": "tool_call",
+      "tool_name": "parse_prd",
+      "arguments": {
+        "file_path": "/nonexistent/fake_requirement.md"
+      },
+      "result": {
+        "error": "文件不存在: /nonexistent/fake_requirement.md"
+      },
+      "tokens": 0,
+      "timestamp": "2026-07-13T18:46:32.748396"
+    },
+    {
+      "round": 2,
+      "type": "think",
+      "content": "文件路径 `/nonexistent/fake_requirement.md` 不存在，无法读取需求文档。\n\n请提供一个**真实存在的、有效的 Markdown 格式需求文档路径**，或直接将需求文档的文本内容粘贴给我，我将立即为您解析并生成完整的测试用例。\n\n如果您有示例需求内容（哪怕是一小段），也可以直接提供，我可基于该内容开展分析。",
+      "finish_reason": "stop",
+      "tool_call_count": 0,
+      "usage": {
+        "prompt_tokens": 1143,
+        "completion_tokens": 85,
+        "total_tokens": 1228
+      },
+      "timestamp": "2026-07-13T18:46:34.690755"
+    }
+  ],
+  "summary": {
+    "total_rounds": 2,
+    "total_tool_calls": 1,
+    "total_tokens": 2342,
+    "tool_names": [
+      "parse_prd"
+    ],
+    "error_count": 0,
+    "errors": [],
+    "duration_seconds": 3.151894
+  }
+}

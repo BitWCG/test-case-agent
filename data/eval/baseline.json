@@ -1,0 +1,10 @@
+{
+  "saved_at": "2026-07-19T20:30:09.970633",
+  "scores": {
+    "deterministic": 0.58,
+    "trajectory": 0.96,
+    "judge": 1.0,
+    "coupling_total": 0.7773
+  },
+  "summary": {}
+}

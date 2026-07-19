@@ -34,6 +34,21 @@ class LLMClient:
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
+    def list_models(self) -> list[str]:
+        """
+        查询 API 当前可用的模型列表。
+
+        返回：模型 ID 列表（如 ['qwen-plus', 'qwen-max', 'qwen-turbo', ...]）
+        如果接口不支持或报错，返回空列表。
+        """
+        try:
+            models = self.client.models.list()
+            model_ids = sorted([m.id for m in models.data])
+            return model_ids
+        except Exception as e:
+            print(f"[WARN] 获取模型列表失败: {e}")
+            return []
+
     # ================================================================
     # TODO 1.1: 实现普通对话调用
     # ================================================================

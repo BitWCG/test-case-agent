@@ -17,6 +17,17 @@ from src.agent.logger import AgentLogger
 from src.eval.trace_recorder import TraceRecorder
 from src.tools.setup import create_test_tool_registry
 
+# 获取评测 logger（如果已配置则共享落盘，否则只走 stdout）
+_eval_logger = logging.getLogger("eval")
+
+
+def _log(msg: str):
+    """Agent 内部日志：同时写评测日志文件 + stdout。"""
+    if _eval_logger.handlers:
+        _eval_logger.info(msg)
+    else:
+        _log(msg)
+
 
 # ================================================================
 # System Prompt — Agent 是谁、能做什么、怎么做
@@ -138,7 +149,7 @@ class SimpleAgent:
         assistant_msg = response.choices[0].message
         finish_reason = response.choices[0].finish_reason
         usage = response.usage  # 重试后更新 usage，确保 logger 记录的是最终结果的 token 用量
-        print(f"[DEBUG] 重试后 finish_reason: {finish_reason}")
+        _log(f"[Think] finish_reason={finish_reason}, tokens={usage.total_tokens if usage else 0}")
 
         # 6. 用 logger 记录
         tool_calls_list = assistant_msg.tool_calls
@@ -201,7 +212,7 @@ class SimpleAgent:
             try:
                 json.loads(args_str)
             except json.JSONDecodeError:
-                print(f"[WARN] tool_call {tc['id']} 的 arguments 不是合法 JSON，已清空为 '{{}}'")
+                _log(f"[WARN] tool_call {tc['id']} 的 arguments 不是合法 JSON，已清空为 '{{}}'")
                 tc["function"]["arguments"] = "{}"
 
         self.messages.append(assistant_msg)
@@ -312,7 +323,7 @@ class SimpleAgent:
             }
             self.messages.append(tool_message)
 
-        print(f"[DEBUG] observe: 写入了 {len(results)} 条工具结果，当前 messages 共 {len(self.messages)} 条")
+        _log(f"[Observe] 写入 {len(results)} 条工具结果")
 
     # ================================================================
     # run() — 主循环（框架已实现，你不需要改这个方法）
@@ -333,7 +344,7 @@ class SimpleAgent:
         返回：
         - 最终回复文本，或 None（超时）
         """
-        print(f"[INFO] 已加载工具: {self.registry.list_tools()}")
+        _log(f"[INFO] 已加载工具: {self.registry.list_tools()}")
 
         # 初始化对话历史
         self.messages = [
@@ -345,8 +356,8 @@ class SimpleAgent:
         self.trace = TraceRecorder(input_text=user_input[:500])
 
         for round_num in range(1, max_rounds + 1):
-            print(f"\n{'='*50}")
-            print(f"--- 第 {round_num} 轮 ---")
+            _log(f"\n{'='*50}")
+            _log(f"--- 第 {round_num} 轮 ---")
 
             # 开始新一轮 trace
             self.trace.start_round()
@@ -364,15 +375,38 @@ class SimpleAgent:
 
             # ── ② 判断是否完成 ──
             if finish_reason == "stop" or not assistant_msg.tool_calls:
-                print(f"[DEBUG] 任务完成（finish_reason={finish_reason}）")
-                print(assistant_msg.content)
+                _log(f"[完成] 第 {round_num} 轮, finish_reason={finish_reason}, "
+                      f"输出 {len(assistant_msg.content or '')} 字符")
                 self.logger.log_completion(round_num, assistant_msg.content)
                 self.trace.finish(output=assistant_msg.content)
                 self.trace.save(f"data/eval/traces/{self.trace.trace_id}.json")
                 return assistant_msg.content
 
             # ── ③ Acting：执行工具调用 ──
+            # 先打印本轮要调用的工具
+            for tc in assistant_msg.tool_calls or []:
+                try:
+                    args_preview = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    args_preview = {"_error": "参数 JSON 截断"}
+                # 参数摘要：过长的值截断显示
+                args_short = {}
+                for k, v in args_preview.items():
+                    v_str = str(v)
+                    args_short[k] = v_str[:80] + "..." if len(v_str) > 80 else v_str
+                _log(f"[调用] {tc.function.name}({args_short})")
+
             tool_results = self.act(assistant_msg)
+
+            # 打印工具返回结果摘要
+            for tc in assistant_msg.tool_calls or []:
+                tool_name = tc.function.name
+                for tid, tr in tool_results:
+                    if tid == tc.id:
+                        result_str = json.dumps(tr, ensure_ascii=False) if isinstance(tr, dict) else str(tr)
+                        preview = result_str[:120] + "..." if len(result_str) > 120 else result_str
+                        _log(f"[结果] {tool_name} → {preview}")
+                        break
 
             # 记录工具调用到 trace
             for tc in assistant_msg.tool_calls or []:
@@ -397,9 +431,7 @@ class SimpleAgent:
             # ── ④ Observe：把结果写回记忆 ──
             self.observe(tool_results)
 
-            print(f"[DEBUG] 本轮结束后 messages 条数: {len(self.messages)}")
-
-        print("[WARN] 达到最大轮次限制")
+        _log("[WARN] 达到最大轮次限制")
         self.logger.log_timeout(max_rounds)
         self.trace.finish(output=None)
         self.trace.save(f"data/eval/traces/{self.trace.trace_id}.json")

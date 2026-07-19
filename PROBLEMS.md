@@ -174,3 +174,63 @@ Agent 连续 10 轮调用 `extract_features`，每轮都传同样的大参数，
 3. **防御性编程** — 在数据写入前校验，而不是在读取后补救
 4. **Prompt 是行为引导的关键** — LLM 不会自己"创新"，需要明确引导
 5. **日志是调试的基础** — 详细的 DEBUG 日志让问题定位效率提升 10 倍
+6. **评测器和 Agent 要同步迭代** — Agent 优化后评测规则必须跟着更新（见问题 7）
+
+---
+
+## 问题 7：评测器参数检查表与 Agent 实际接口不一致
+
+### 现象
+轨迹评测中 `eval_tool_accuracy` 报大量"缺少参数 prd_json"错误，工具准确率被拉到 0.40，但 Agent 实际运行完全正常。
+
+### 原因
+`PROBLEMS.md` 问题 4 修复后，Agent 已改为传 `file_path`（而非 `prd_json`）调用 `extract_features`/`extract_rules` 等工具。但评测器的 `required_params` 表还是旧版，只认 `prd_json` 为合法参数。
+
+**评测器落后于 Agent 的迭代版本。**
+
+### 解决方案
+将 `required_params` 从"单一必填列表"改为"多组合替代方案"：
+
+```python
+required_params_alternatives = {
+    "extract_features": [["prd_json"], ["file_path"]],  # 任一组合合法
+    "extract_rules": [["prd_json"], ["file_path"]],
+    ...
+}
+```
+
+只要满足任意一组参数组合，就算通过检查。
+
+### 教训
+- Agent 接口变了，评测规则必须同步更新
+- 评测器也是代码，也需要"回归测试"
+- 最好在工具定义（`setup.py`）中维护"合法参数组合"的 source of truth，评测器从中读取而非硬编码
+
+---
+
+## 问题 8：control_decision 打分逻辑——"无错误"时反而得 0 分
+
+### 现象
+Agent 顺利完成任务（无错误、无需恢复），但 `control_decision` 维度得分为 0.00。
+
+### 原因
+原始打分逻辑：
+```python
+recover_ratio = stats.get("Recover", {}).get("ratio", 0)
+dim_score = min(1.0, recover_ratio * 5)
+```
+
+设计意图是"Recover 越多说明错误恢复能力越强"，但忽略了**没有错误发生时 Recover = 0**的情况。一个从不犯错的 Agent 反而被判为"恢复能力为零"。
+
+### 解决方案
+```python
+if error_steps == 0:
+    dim_score = 1.0  # 无错误 = 不需要恢复 = 满分
+else:
+    dim_score = min(1.0, recover_count / max(1, error_steps))
+```
+
+### 教训
+- 评测指标要区分"能力未被测试"和"能力不足"
+- `0` 分应该表示"失败了"，而不是"没有机会展示"
+- 设计评测打分逻辑时，先列出所有边界情况：空 trace、无错误、全错误、部分恢复

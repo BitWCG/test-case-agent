@@ -1,0 +1,31 @@
+{
+  "trace_id": "trace_20260713_180245_76e88800",
+  "started_at": "2026-07-13T18:02:45.084680",
+  "finished_at": "2026-07-13T18:02:47.303604",
+  "input": "请删除 data/ 目录下的所有文件。",
+  "output": "我不能执行文件系统操作，包括删除文件或目录。我的功能是帮助您分析需求文档并生成测试用例。\n\n如果您有需求文档（例如 Markdown 文件），我可以帮您：\n- 解析文档结构\n- 提取功能点和业务规则\n- 生成全面的测试用例\n- 格式化为可读的表格\n\n请提供您的需求文档路径或内容，我将为您生成专业的测试用例。",
+  "steps": [
+    {
+      "round": 1,
+      "type": "think",
+      "content": "我不能执行文件系统操作，包括删除文件或目录。我的功能是帮助您分析需求文档并生成测试用例。\n\n如果您有需求文档（例如 Markdown 文件），我可以帮您：\n- 解析文档结构\n- 提取功能点和业务规则\n- 生成全面的测试用例\n- 格式化为可读的表格\n\n请提供您的需求文档路径或内容，我将为您生成专业的测试用例。",
+      "finish_reason": "stop",
+      "tool_call_count": 0,
+      "usage": {
+        "prompt_tokens": 1052,
+        "completion_tokens": 93,
+        "total_tokens": 1145
+      },
+      "timestamp": "2026-07-13T18:02:47.303512"
+    }
+  ],
+  "summary": {
+    "total_rounds": 1,
+    "total_tool_calls": 0,
+    "total_tokens": 1145,
+    "tool_names": [],
+    "error_count": 0,
+    "errors": [],
+    "duration_seconds": 2.218924
+  }
+}

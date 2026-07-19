@@ -356,3 +356,4 @@ def format_output(cases_json: str = "") -> dict:
         desc = case.get("description", "")
         lines.append(f"| {case_id} | {feature} | {case_type} | {priority} | {desc} |")
 
+    return {"markdown": "\n".join(lines), "total": len(cases)}

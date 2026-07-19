@@ -1,0 +1,76 @@
+{
+  "calibration_samples": [
+    {
+      "id": "cal_01",
+      "description": "高质量用例 - 应得 4-5 分",
+      "requirement": "用户登录：用户名4-20字符，密码6-20位，错5次锁定30分钟",
+      "agent_output": "TC001: 正确用户名+密码登录 → 200+token; TC002: 错误密码 → 401; TC003: 用户名3字符 → 400; TC004: 密码21位 → 400; TC005: 连续错5次 → 423锁定; TC006: 锁定期正确密码 → 423; TC007: 30分钟后解锁 → 200",
+      "human_scores": {
+        "correctness": 5,
+        "completeness": 4,
+        "clarity": 4,
+        "actionability": 4,
+        "edge_case_awareness": 4
+      },
+      "human_reason": "覆盖了核心流程和主要边界，但缺少特殊字符、SQL注入等安全场景"
+    },
+    {
+      "id": "cal_02",
+      "description": "中等质量用例 - 应得 3 分",
+      "requirement": "用户登录：用户名4-20字符，密码6-20位，错5次锁定30分钟",
+      "agent_output": "TC001: 正常登录成功; TC002: 密码错误提示错误; TC003: 用户名太短报错",
+      "human_scores": {
+        "correctness": 4,
+        "completeness": 2,
+        "clarity": 3,
+        "actionability": 2,
+        "edge_case_awareness": 1
+      },
+      "human_reason": "只有3条用例，缺少锁定、记住我、限流等功能的测试，无边界值，描述过于简略无法执行"
+    },
+    {
+      "id": "cal_03",
+      "description": "低质量用例 - 应得 1-2 分",
+      "requirement": "用户登录：用户名4-20字符，密码6-20位，错5次锁定30分钟",
+      "agent_output": "测试登录功能是否正常工作。需要验证各种情况。",
+      "human_scores": {
+        "correctness": 2,
+        "completeness": 1,
+        "clarity": 1,
+        "actionability": 1,
+        "edge_case_awareness": 1
+      },
+      "human_reason": "完全没有具体的测试用例，只有笼统描述，无法执行"
+    },
+    {
+      "id": "cal_04",
+      "description": "有事实错误的用例 - correctness 应扣分",
+      "requirement": "用户登录：用户名4-20字符，密码6-20位，错5次锁定30分钟",
+      "agent_output": "TC001: 正常登录; TC002: 连续错3次锁定15分钟 → 423; TC003: 密码支持特殊字符如@#$",
+      "human_scores": {
+        "correctness": 2,
+        "completeness": 2,
+        "clarity": 4,
+        "actionability": 4,
+        "edge_case_awareness": 2
+      },
+      "human_reason": "TC002把5次改成了3次、30分钟改成15分钟（事实错误）；TC003说密码支持特殊字符，但需求说只允许字母数字（编造）"
+    },
+    {
+      "id": "cal_05",
+      "description": "格式好但缺边界的用例 - edge_case 应扣分",
+      "requirement": "用户登录：用户名4-20字符，密码6-20位，错5次锁定30分钟",
+      "agent_output": "TC001: 输入admin/Pass123点击登录 → 成功跳转首页; TC002: 输入admin/wrong点击登录 → 提示错误; TC003: 不输入密码点击登录 → 提示必填; TC004: 勾选记住我登录 → token 7天有效",
+      "human_scores": {
+        "correctness": 5,
+        "completeness": 3,
+        "clarity": 5,
+        "actionability": 5,
+        "edge_case_awareness": 2
+      },
+      "human_reason": "描述非常清晰可执行，但全是happy path，没有边界值（4字符/20字符/21字符），没有锁定机制测试，没有安全场景"
+    }
+  ],
+  "usage": "用这些样本测试 Judge 的打分一致性：对每个样本调用 judge()，对比 human_scores 和 Judge 输出的差异。差异 > 1.5 分的维度说明 Judge 需要校准。",
+  "acceptance_criteria": "Judge 打分与人类标注的平均绝对误差 MAE < 1.0 分（5分制下）"
+}

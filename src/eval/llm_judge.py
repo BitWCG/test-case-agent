@@ -6,34 +6,13 @@ Day 13: LLM-as-Judge
 Judge 检查"好不好"（用例质量、是否可执行、是否有意义）。
 """
 import json
-from pathlib import Path
+
+from src.agent.llm_client import LLMClient
 
 
 # ================================================================
-# LLM-as-Judge
+# 评分 Rubric（评分标准）
 # ================================================================
-
-# ================================================================
-# TODO 8.1: 定义评分 Rubric
-# ================================================================
-# Rubric（评分标准）是 Judge 打分的依据。每个分数等级有明确的描述，
-# 减少 Judge LLM 的主观偏差。
-#
-# 步骤：
-#   1. 定义 5 个质量维度的 Rubric：
-#      - correctness（正确性）：用例是否符合需求文档中的描述
-#      - completeness（完整性）：是否覆盖了所有需要的场景
-#      - clarity（清晰度）：用例描述是否清晰、可执行
-#      - actionability（可执行性）：是否包含具体的步骤和预期结果
-#      - edge_case_awareness（边界意识）：是否覆盖了边界和异常场景
-#   2. 每个维度 1-5 分：
-#      - 5 分：优秀，无明显问题
-#      - 4 分：良好，有少量可改进之处
-#      - 3 分：及格，有较明显遗漏或错误
-#      - 2 分：较差，有严重遗漏或错误
-#      - 1 分：很差，几乎不可用
-#   3. 返回一个 dict，包含每个维度的评分标准文本
-#
 RUBRIC = {
     "correctness": {
         5: "所有用例描述与需求文档完全一致，无事实错误",
@@ -72,231 +51,225 @@ RUBRIC = {
     },
 }
 
+# 五个评分维度名
+DIMENSIONS = ["correctness", "completeness", "clarity",
+              "actionability", "edge_case_awareness"]
 
-# ================================================================
-# TODO 8.2: judge — 单次 LLM 评分
-# ================================================================
-# 调用 Judge LLM 对 Agent 的输出打分。
-#
-# 步骤：
-#   1. 构建 Judge Prompt：
-#      - 包含评分 Rubric（上面的 RUBRIC dict 转成文本）
-#      - 包含原始需求文档内容
-#      - 包含 Agent 生成的测试用例
-#      - 明确要求 Judge 输出 JSON 格式：{"correctness": int, "completeness": int, ...}
-#   2. 调用 LLM：
-#      - 使用 self.judge_llm.client.chat.completions.create()
-#      - model 用另一个模型（如 qwen-max，不能和 Agent 共用 qwen-plus）
-#      - temperature=0.1（低温度保证一致性）
-#      - response_format={"type": "json_object"} 强制 JSON 输出
-#   3. 解析 Judge 返回的 JSON
-#   4. 返回 {"scores": {...}, "overall": float, "reason": "..."}
-#      - overall = 5 个维度的平均分
-#
-# 提示：
-#   - Judge LLM 的初始化：在 __init__ 中新建一个 LLMClient，指定不同模型
-#   - 如果 Judge 返回的 JSON 解析失败，重试 1 次
-#   - 如果重试还是失败，返回默认分（全 3 分）
-#
-def __init__(self, judge_model: str = "qwen-max"):
+
+def _format_rubric() -> str:
+    """将 RUBRIC dict 格式化为可读文本，供 Judge Prompt 使用。"""
+    lines = []
+    for dim, levels in RUBRIC.items():
+        lines.append(f"\n【{dim}】")
+        for score, desc in sorted(levels.items(), reverse=True):
+            lines.append(f"  {score}分: {desc}")
+    return "\n".join(lines)
+
+
+# 预格式化，避免每次调用都重复计算
+_RUBRIC_TEXT = _format_rubric()
+
+
+class LLMJudge:
     """
-    初始化 Judge。
+    LLM-as-Judge 评测器。
 
-    参数：
-    - judge_model: 用于评分的 LLM 模型名，必须与 Agent 模型不同
+    使用独立的 LLM 模型对 Agent 输出的测试用例做主观质量评分。
+    支持严格模式和宽松模式，multi_judge 取两种模式的中位数减少偏差。
     """
-    # ============================================================
-    # 步骤 1: 创建独立的 LLM Client
-    # ============================================================
-    # 用和 Agent 相同的 LLMClient 类，但指定不同的 model 名
-    # from src.llm.llm_client import LLMClient
-    # self.judge_llm = LLMClient(model=judge_model)
-    #
-    # ============================================================
-    # 步骤 2: 保存模型名（用于日志）
-    # ============================================================
-    # self.model = judge_model
-    #
-    # ============================================================
-    # 步骤 3: 准备评分 Prompt 模板（2 种模式）
-    # ============================================================
-    # 严格模式 prompt：
-    #   self.strict_prompt_template = (
-    #       "你是一位严格的测试评审专家。请对以下测试用例做质量评分。\n\n"
-    #       "评分标准（1-5 分）：\n"
-    #       + 将 RUBRIC 格式化为文本
-    #       + "\n请严格评分，对任何错误都不要放过。\n\n"
-    #       "原始需求：{requirement}\n\n"
-    #       "测试用例输出：{result}\n\n"
-    #       "请返回 JSON: {{\"correctness\": int, \"completeness\": int, "
-    #       "\"clarity\": int, \"actionability\": int, "
-    #       "\"edge_case_awareness\": int, \"reason\": \"...\"}}"
-    #   )
-    #
-    # 宽松模式 prompt：
-    #   self.lenient_prompt_template = (...)
-    #   区别：强调"从实用角度评分"，对格式瑕疵宽容
-    pass
 
+    def __init__(self, judge_model: str = "qwen-max"):
+        """
+        初始化 Judge。
 
-def judge(self, result: str, requirement: str) -> dict:
-    """
-    用 LLM 对 Agent 输出做质量评分。
+        参数：
+        - judge_model: 用于评分的 LLM 模型名，必须与 Agent 模型不同
+        """
+        self.judge_llm = LLMClient(model=judge_model)
+        self.model = judge_model
 
-    参数：
-    - result: Agent 生成的测试用例（Markdown 或 JSON）
-    - requirement: 原始需求文档内容
+        # 严格模式 prompt 模板
+        self.strict_prompt_template = (
+            "你是一位严格的测试评审专家。请对以下测试用例做质量评分。\n\n"
+            "评分标准（每个维度 1-5 分）：\n"
+            f"{_RUBRIC_TEXT}\n\n"
+            "请严格评分，对任何错误都不要放过。\n\n"
+            "---\n"
+            "原始需求文档：\n{requirement}\n\n"
+            "---\n"
+            "Agent 生成的测试用例：\n{result}\n\n"
+            "---\n"
+            "请先逐维度分析（每个维度 2-3 句话说明打分依据），然后给出最终 JSON。\n"
+            "输出格式：先写分析，最后一行输出纯 JSON：\n"
+            '{{"correctness": <int 1-5>, "completeness": <int 1-5>, '
+            '"clarity": <int 1-5>, "actionability": <int 1-5>, '
+            '"edge_case_awareness": <int 1-5>, "reason": "<一句话总结>"}}'
+        )
 
-    返回：
-    - {"scores": {维度名: 分数}, "overall": float, "reason": "评分说明"}
-    """
-    # ============================================================
-    # 步骤 1: 构建 Judge Prompt
-    # ============================================================
-    # 将 RUBRIC 转为可读文本：
-    #   rubric_text = ""
-    #   for dim, levels in RUBRIC.items():
-    #       rubric_text += f"\n{dim}:\n"
-    #       for score, desc in levels.items():
-    #           rubric_text += f"  {score}分: {desc}\n"
-    #
-    # 构建完整 prompt（用 self.strict_prompt_template 或传入的 prompt）：
-    #   prompt = self.strict_prompt_template.format(
-    #       requirement=requirement,
-    #       result=result,
-    #       rubric=rubric_text,
-    #   )
-    #
-    # ============================================================
-    # 步骤 2: 调用 Judge LLM
-    # ============================================================
-    # 用低 temperature 保证一致性：
-    #   response = self.judge_llm.client.chat.completions.create(
-    #       model=self.model,
-    #       messages=[{"role": "user", "content": prompt}],
-    #       temperature=0.1,
-    #       response_format={"type": "json_object"},  # 强制 JSON 输出
-    #   )
-    #   raw_output = response.choices[0].message.content
-    #
-    # ============================================================
-    # 步骤 3: 解析 Judge 返回的 JSON
-    # ============================================================
-    # max_retries = 2
-    # for attempt in range(max_retries):
-    #     try:
-    #         scores = json.loads(raw_output)
-    #         # 验证必填字段
-    #         required_dims = ["correctness", "completeness", "clarity",
-    #                          "actionability", "edge_case_awareness"]
-    #         for dim in required_dims:
-    #             if dim not in scores:
-    #                 raise ValueError(f"缺少维度: {dim}")
-    #             # 强制分数在 1-5 范围内
-    #             scores[dim] = max(1, min(5, int(scores[dim])))
-    #         break
-    #     except (json.JSONDecodeError, ValueError, KeyError) as e:
-    #         if attempt == max_retries - 1:
-    #             # 重试失败，返回默认分
-    #             scores = {dim: 3 for dim in required_dims}
-    #             scores["reason"] = f"解析失败({e})，使用默认分"
-    #         else:
-    #             # 重试：告诉 LLM 上次返回格式不对，请重新输出
-    #             raw_output = retry_call()  # 重新调用 LLM
-    #
-    # ============================================================
-    # 步骤 4: 计算总分并返回
-    # ============================================================
-    # overall = sum(scores[dim] for dim in required_dims) / len(required_dims)
-    # return {
-    #     "scores": {dim: scores[dim] for dim in required_dims},
-    #     "overall": round(overall, 2),
-    #     "reason": scores.get("reason", ""),
-    # }
-    pass
+        # 宽松模式 prompt 模板
+        self.lenient_prompt_template = (
+            "你是一位注重实用性的测试评审专家。请对以下测试用例做质量评分。\n\n"
+            "评分标准（每个维度 1-5 分）：\n"
+            f"{_RUBRIC_TEXT}\n\n"
+            "请从实用角度评分，只要用例能指导测试即可，格式瑕疵可以忽略。\n\n"
+            "---\n"
+            "原始需求文档：\n{requirement}\n\n"
+            "---\n"
+            "Agent 生成的测试用例：\n{result}\n\n"
+            "---\n"
+            "请先逐维度分析（每个维度 2-3 句话说明打分依据），然后给出最终 JSON。\n"
+            "输出格式：先写分析，最后一行输出纯 JSON：\n"
+            '{{"correctness": <int 1-5>, "completeness": <int 1-5>, '
+            '"clarity": <int 1-5>, "actionability": <int 1-5>, '
+            '"edge_case_awareness": <int 1-5>, "reason": "<一句话总结>"}}'
+        )
 
+    def judge(self, result: str, requirement: str, mode: str = "strict") -> dict:
+        """
+        用 LLM 对 Agent 输出做质量评分。
 
-# ================================================================
-# TODO 8.3: multi_judge — 多 Judge 投票
-# ================================================================
-# 使用 2 种不同风格的 prompt 分别评分，取中位数，减少单一 prompt 偏差。
-#
-# 步骤：
-#   1. 定义 2 种 Judge Prompt：
-#      - "严格模式"：强调准确性和完整性，对错误敏感（prompt 中加入"请严格评分"）
-#      - "宽松模式"：强调实用性，对格式瑕疵宽容（prompt 中加入"请从实用角度评分"）
-#   2. 用 2 个 prompt 分别调用 judge()（注意：共用同一个 LLM，只改 prompt）
-#   3. 对每个维度的分数取中位数
-#   4. 如果 2 个评分差异过大（> 2 分），标记为"不一致"
-#   5. 返回 {"scores": {...}, "overall": float, "disagreement": [...]}
-#
-# 提示：
-#   - 中位数计算：sorted([a, b])[len//2]，对 2 个数取中间值
-#   - disagreement 记录差异 > 2 分的维度，方便后续分析
-#
-def multi_judge(self, result: str, requirement: str) -> dict:
-    """
-    使用多 Judge 投票减少偏差。
+        参数：
+        - result: Agent 生成的测试用例（Markdown 或 JSON 文本）
+        - requirement: 原始需求文档内容
+        - mode: "strict"（严格）或 "lenient"（宽松）
 
-    参数：
-    - result: Agent 生成的测试用例
-    - requirement: 原始需求文档内容
+        返回：
+        - {"scores": {维度名: 分数}, "overall": float, "reason": "评分说明", "mode": str}
+        """
+        # 选择 prompt 模板
+        if mode == "lenient":
+            template = self.lenient_prompt_template
+        else:
+            template = self.strict_prompt_template
 
-    返回：
-    - {"scores": {...}, "overall": float, "disagreement": [...], "details": [...]}
-    """
-    # ============================================================
-    # 步骤 1: 定义 2 种 Judge Prompt 变体
-    # ============================================================
-    # 严格模式：追加 "请严格评分，对任何错误都不要放过。"
-    # 宽松模式：追加 "请从实用角度评分，只要用例能指导测试即可，格式瑕疵可以忽略。"
-    #
-    # ============================================================
-    # 步骤 2: 分别调用 judge()
-    # ============================================================
-    # 注意：共用同一个 self.judge_llm，只改 prompt 参数
-    #
-    # 方案 A（推荐）：在 judge() 中增加 prompt_mode 参数
-    #   strict_result = self.judge(result, requirement, mode="strict")
-    #   lenient_result = self.judge(result, requirement, mode="lenient")
-    #
-    # 方案 B（简单）：修改 self.strict_prompt_template 后调用 2 次
-    #   original_template = self.strict_prompt_template
-    #   self.strict_prompt_template = strict_template
-    #   strict_result = self.judge(result, requirement)
-    #   self.strict_prompt_template = lenient_template
-    #   lenient_result = self.judge(result, requirement)
-    #   self.strict_prompt_template = original_template  # 恢复
-    #
-    # ============================================================
-    # 步骤 3: 对每个维度取中位数
-    # ============================================================
-    # dimensions = ["correctness", "completeness", "clarity",
-    #               "actionability", "edge_case_awareness"]
-    # final_scores = {}
-    # disagreement = []
-    # for dim in dimensions:
-    #     s1 = strict_result["scores"][dim]
-    #     s2 = lenient_result["scores"][dim]
-    #     # 对 2 个值取中位数（平均值向上取整）
-    #     final_scores[dim] = (s1 + s2 + 1) // 2  # 整数除法向上取整
-    #     # 如果差异 > 2 分，记录为不一致
-    #     if abs(s1 - s2) > 2:
-    #         disagreement.append({
-    #             "dimension": dim,
-    #             "strict": s1,
-    #             "lenient": s2,
-    #             "diff": abs(s1 - s2),
-    #         })
-    #
-    # ============================================================
-    # 步骤 4: 计算总分并返回
-    # ============================================================
-    # overall = sum(final_scores.values()) / len(final_scores)
-    # return {
-    #     "scores": final_scores,
-    #     "overall": round(overall, 2),
-    #     "disagreement": disagreement,
-    #     "details": [strict_result, lenient_result],
-    # }
-    pass
+        prompt = template.format(requirement=requirement, result=result)
+
+        # 调用 Judge LLM（最多重试 2 次）
+        max_retries = 2
+        messages = [{"role": "user", "content": prompt}]
+        raw_output = None
+        scores = {dim: 3 for dim in DIMENSIONS}  # 默认值，防止异常时未绑定
+
+        for attempt in range(max_retries):
+            try:
+                # 使用普通 chat（允许 CoT 自由文本 + 末尾 JSON）
+                raw_output = self.judge_llm.chat(
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=2048,
+                )
+                # 从输出中提取最后一个 JSON 对象
+                scores = self._extract_json(raw_output)
+
+                # 验证必填字段并钳位到 1-5
+                for dim in DIMENSIONS:
+                    if dim not in scores:
+                        raise ValueError(f"缺少维度: {dim}")
+                    scores[dim] = max(1, min(5, int(scores[dim])))
+                break
+
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+                if attempt == max_retries - 1:
+                    # 重试耗尽，返回默认分
+                    scores = {dim: 3 for dim in DIMENSIONS}
+                    scores["reason"] = f"Judge 解析失败({e})，使用默认分 3"
+                else:
+                    # 重试：追加纠正提示
+                    retry_hint = (
+                        f"你上一次的返回无法解析为合法 JSON（错误: {e}）。"
+                        "请在分析结束后，最后一行输出纯 JSON，不要包含 markdown 代码块。"
+                    )
+                    messages = [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": raw_output or ""},
+                        {"role": "user", "content": retry_hint},
+                    ]
+
+        # 计算总分
+        overall = sum(scores.get(dim, 3) for dim in DIMENSIONS) / len(DIMENSIONS)
+
+        return {
+            "scores": {dim: scores.get(dim, 3) for dim in DIMENSIONS},
+            "overall": round(overall, 2),
+            "reason": scores.get("reason", ""),
+            "mode": mode,
+        }
+
+    @staticmethod
+    def _extract_json(text: str) -> dict:
+        """
+        从 CoT 输出中提取 JSON 对象。
+
+        策略：从后往前找第一个 '{' 到最后一个 '}' 的匹配，解析为 JSON。
+        如果输出被 ```json ... ``` 包裹也能处理。
+        """
+        import re
+
+        # 尝试 1：去掉 markdown 代码块标记
+        cleaned = re.sub(r"```json\s*", "", text)
+        cleaned = re.sub(r"```\s*$", "", cleaned.strip())
+
+        # 尝试 2：从后往前找最后一个完整的 JSON 对象
+        last_brace = cleaned.rfind("}")
+        if last_brace == -1:
+            raise json.JSONDecodeError("未找到 JSON 结束符 '}'", text, 0)
+
+        # 从 last_brace 往前找对应的 '{'
+        depth = 0
+        start = -1
+        for i in range(last_brace, -1, -1):
+            if cleaned[i] == "}":
+                depth += 1
+            elif cleaned[i] == "{":
+                depth -= 1
+            if depth == 0:
+                start = i
+                break
+
+        if start == -1:
+            raise json.JSONDecodeError("未找到匹配的 JSON 起始符 '{'", text, 0)
+
+        json_str = cleaned[start:last_brace + 1]
+        return json.loads(json_str)
+
+    def multi_judge(self, result: str, requirement: str) -> dict:
+        """
+        使用严格 + 宽松两种模式分别评分，取中位数减少偏差。
+
+        参数：
+        - result: Agent 生成的测试用例
+        - requirement: 原始需求文档内容
+
+        返回：
+        - {"scores": {...}, "overall": float, "disagreement": [...], "details": [...]}
+        """
+        # 两种模式分别调用
+        strict_result = self.judge(result, requirement, mode="strict")
+        lenient_result = self.judge(result, requirement, mode="lenient")
+
+        # 对每个维度取中位数（两个值的向上取整平均）
+        final_scores = {}
+        disagreement = []
+
+        for dim in DIMENSIONS:
+            s1 = strict_result["scores"][dim]
+            s2 = lenient_result["scores"][dim]
+            final_scores[dim] = (s1 + s2 + 1) // 2
+
+            # 差异 > 2 分记录为不一致
+            if abs(s1 - s2) > 2:
+                disagreement.append({
+                    "dimension": dim,
+                    "strict": s1,
+                    "lenient": s2,
+                    "diff": abs(s1 - s2),
+                })
+
+        overall = sum(final_scores.values()) / len(final_scores)
+
+        return {
+            "scores": final_scores,
+            "overall": round(overall, 2),
+            "disagreement": disagreement,
+            "details": [strict_result, lenient_result],
+        }
